@@ -38,6 +38,10 @@ static IDirect3DVertexBuffer9 *im2dvertbuf;
 static IDirect3DIndexBuffer9 *im2dindbuf;
 
 void *im2dOverridePS;
+// [LOCAL PORT: EX_PORT_WATERREF] Im3D shader-override hooks so a user pipeline can
+// replace the default VS/PS around an Im3D draw. Set both, do the Im3D draw, unset.
+void *im3dOverrideVS;
+void *im3dOverridePS;
 
 void
 openIm2D(void)
@@ -163,6 +167,8 @@ im2DRenderPrimitive(PrimitiveType primType, void *vertices, int32 numVertices)
 		break;
 	}
 	d3ddevice->DrawPrimitive((D3DPRIMITIVETYPE)primTypeMap[primType], 0, primCount);
+	exProfDraws++;
+	exProfPrims += primCount;
 }
 
 void
@@ -222,6 +228,8 @@ im2DRenderIndexedPrimitive(PrimitiveType primType,
 	d3ddevice->DrawIndexedPrimitive((D3DPRIMITIVETYPE)primTypeMap[primType], 0,
 	                                0, numVertices,
 	                                0, primCount);
+	exProfDraws++;
+	exProfPrims += primCount;
 }
 
 
@@ -313,12 +321,24 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
 	setStreamSource(0, im3dvertbuf, 0, sizeof(Im3DVertex));
 	setVertexDeclaration(im3ddecl);
 
-	setVertexShader(shader);
+	if(im3dOverrideVS)
+		setVertexShader(im3dOverrideVS);
+	else
+		setVertexShader(shader);
 
-	float dayparam[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-	float nightparam[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-	d3ddevice->SetVertexShaderConstantF(VSLOC_dayParam, dayparam, 1);
-	d3ddevice->SetVertexShaderConstantF(VSLOC_nightParam, nightparam, 1);
+	// VSLOC_dayParam/nightParam land on c42/c43 - the SAME registers the water
+	// reflection override VS (neoWater_VS) reads reflProps/specLights from. When a
+	// water override is active these day/night writes would clobber the reflProps
+	// that WaterReflectionFlatBegin just uploaded (making reflAmount=1 -> pure
+	// reflection with no water texture). Skip them for the override draw; the
+	// override VS doesn't use day/night blending. (re3-modded's librw has no
+	// dayParam mechanism at all, which is why its flat water reflected correctly.)
+	if(im3dOverrideVS == nil){
+		float dayparam[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+		float nightparam[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+		d3ddevice->SetVertexShaderConstantF(VSLOC_dayParam, dayparam, 1);
+		d3ddevice->SetVertexShaderConstantF(VSLOC_nightParam, nightparam, 1);
+	}
 
 	num3DVertices = numVertices;
 }
@@ -326,7 +346,9 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
 void
 im3DRenderPrimitive(PrimitiveType primType)
 {
-	if(engine->device.getRenderState(TEXTURERASTER))
+	if(im3dOverridePS)
+		setPixelShader(im3dOverridePS);
+	else if(engine->device.getRenderState(TEXTURERASTER))
 		setPixelShader(default_tex_PS);
 	else
 		setPixelShader(default_PS);
@@ -355,6 +377,8 @@ im3DRenderPrimitive(PrimitiveType primType)
 		break;
 	}
 	d3ddevice->DrawPrimitive((D3DPRIMITIVETYPE)primTypeMap[primType], 0, primCount);
+	exProfDraws++;
+	exProfPrims += primCount;
 }
 
 void
@@ -366,7 +390,9 @@ im3DRenderIndexedPrimitive(PrimitiveType primType, void *indices, int32 numIndic
 
 	setIndices(im3dindbuf);
 
-	if(engine->device.getRenderState(TEXTURERASTER))
+	if(im3dOverridePS)
+		setPixelShader(im3dOverridePS);
+	else if(engine->device.getRenderState(TEXTURERASTER))
 		setPixelShader(default_tex_PS);
 	else
 		setPixelShader(default_PS);
@@ -397,6 +423,8 @@ im3DRenderIndexedPrimitive(PrimitiveType primType, void *indices, int32 numIndic
 	d3ddevice->DrawIndexedPrimitive((D3DPRIMITIVETYPE)primTypeMap[primType], 0,
 	                                0, num3DVertices,
 	                                0, primCount);
+	exProfDraws++;
+	exProfPrims += primCount;
 }
 
 void

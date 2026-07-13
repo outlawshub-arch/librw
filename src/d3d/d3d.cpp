@@ -485,10 +485,28 @@ rasterCreateCamera(Raster *raster)
 	return raster;
 }
 
+// custom: see rasterCreateZbuffer
+IDirect3DSurface9 *overrideZbufSurf;
+// custom: device-lost notification (see rwd3d.h) - the game frees its DEFAULT-pool resources
+void (*deviceLostCB)(void);
+
 static Raster*
 rasterCreateZbuffer(Raster *raster)
 {
 	D3dRaster *natras = GETD3DRASTEREXT(raster);
+
+	// custom: substitute a game-provided surface (e.g. an INTZ depth TEXTURE for the shadow-map
+	// camera, so its depth can be sampled by shaders) for this z-buffer raster. One-shot.
+	// NB not recreated on device reset - the game must rebuild its camera then.
+	if(overrideZbufSurf){
+		natras->autogenMipmap = 0;
+		natras->format = d3d9Globals.present.AutoDepthStencilFormat;
+		raster->depth = findFormatDepth(natras->format);
+		natras->texture = overrideZbufSurf;
+		overrideZbufSurf = nil;
+		addVidmemRaster(raster);
+		return raster;
+	}
 
 	natras->autogenMipmap = 0;
 
@@ -1015,6 +1033,70 @@ setTexels(Raster *raster, void *texels, int32 level)
 	raster->unlock(level);
 }
 
+// GS-emu pass elision: classify a texture as "binary alpha" when no texel alpha lies
+// strictly inside (0, 128) at ANY mip level - the GS soft pass (alpha < ref, blended)
+// can then never produce a visible pixel. Conservative: anything unscannable stays
+// soft and keeps both passes. Called once per texture at native-texture read.
+void
+evaluateBinaryAlpha(Raster *raster)
+{
+	D3dRaster *natras = GETD3DRASTEREXT(raster);
+	natras->binaryAlpha = false;
+	if(raster == nil || raster->width == 0 || raster->height == 0)
+		return;
+	if(!natras->hasAlpha){
+		natras->binaryAlpha = true;	// alpha reads 255 everywhere
+		return;
+	}
+	if(natras->customFormat){
+		natras->binaryAlpha = natras->format == 0x31545844;	// DXT1: 1-bit alpha at every level
+		return;
+	}
+	int32 fmt = raster->format & 0xf00;
+	if(fmt == Raster::C1555){
+		natras->binaryAlpha = true;	// 1-bit alpha
+		return;
+	}
+	if(raster->format & (Raster::PAL4 | Raster::PAL8)){
+		// P8-capable hardware path: texels index the palette, scan its entries
+		uint8 *pal = (uint8*)natras->palette;
+		if(pal == nil)
+			return;
+		int32 n = (raster->format & Raster::PAL4) ? 32 : 256;
+		for(int32 i = 0; i < n; i++)
+			if(pal[i*4 + 3] > 0 && pal[i*4 + 3] < 128)
+				return;	// soft entry - keep both passes
+		natras->binaryAlpha = true;
+		return;
+	}
+	if(fmt != Raster::C8888 && fmt != Raster::C4444)
+		return;
+	// scan every level: box-filtered mips of a binary level 0 can grow midtones
+	int32 nlev = raster->getNumLevels();
+	for(int32 l = 0; l < nlev; l++){
+		int32 w = raster->width >> l;   if(w < 1) w = 1;
+		int32 h = raster->height >> l;  if(h < 1) h = 1;
+		uint8 *px = raster->lock(l, Raster::LOCKREAD);
+		if(px == nil)
+			return;	// unlockable - stay soft
+		bool soft = false;
+		if(fmt == Raster::C8888){
+			for(int32 i = 0; i < w*h; i++)
+				if(px[i*4 + 3] > 0 && px[i*4 + 3] < 128){ soft = true; break; }
+		}else{	// A4R4G4B4: alpha nibble n scales to n*17; 1..7 land inside (0,128)
+			uint16 *p16 = (uint16*)px;
+			for(int32 i = 0; i < w*h; i++){
+				int32 a = p16[i] >> 12;
+				if(a > 0 && a < 8){ soft = true; break; }
+			}
+		}
+		raster->unlock(l);
+		if(soft)
+			return;
+	}
+	natras->binaryAlpha = true;
+}
+
 static void*
 createNativeRaster(void *object, int32 offset, int32)
 {
@@ -1025,6 +1107,7 @@ createNativeRaster(void *object, int32 offset, int32)
 	raster->format = 0;
 	raster->hasAlpha = 0;
 	raster->customFormat = 0;
+	raster->binaryAlpha = 0;
 	return object;
 }
 

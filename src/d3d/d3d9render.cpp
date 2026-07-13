@@ -32,6 +32,8 @@ drawInst_simple(d3d9::InstanceDataHeader *header, d3d9::InstanceData *inst)
 	d3ddevice->DrawIndexedPrimitive((D3DPRIMITIVETYPE)header->primType, inst->baseIndex,
 	                                0, inst->numVertices,
 	                                inst->startIndex, inst->numPrimitives);
+	d3d::exProfDraws++;
+	d3d::exProfPrims += inst->numPrimitives;
 }
 
 // Emulate PS2 GS alpha test FB_ONLY case: failed alpha writes to frame- but not to depth buffer
@@ -49,13 +51,29 @@ drawInst_GSemu(d3d9::InstanceDataHeader *header, InstanceData *inst)
 			alpharef = rw::GetRenderState(rw::ALPHATESTREF);
 			gsalpharef = rw::GetRenderState(rw::GSALPHATESTREF);
 
-			SetRenderState(rw::ALPHATESTFUNC, rw::ALPHAGREATEREQUAL);
+			// pass elision: the effective material alpha (published by setMaterial,
+			// 255 when the geometry doesn't modulate) caps every pixel's final alpha.
+			// Below the GS ref the solid pass can't pass its GE test anywhere; at a
+			// 255 cap with no per-vertex alpha and a binary-alpha texture no pixel
+			// can land inside (0, ref) for the soft pass. Either way the skipped
+			// pass is a mathematically empty draw.
+			Texture *tex = inst->material->texture;
+			d3d::D3dRaster *natras = tex && tex->raster ? GETD3DRASTEREXT(tex->raster) : nil;
+			bool skipSolid = d3d::gsEffMatAlpha < gsalpharef;
+			bool skipSoft = d3d::gsEffMatAlpha == 255 && !inst->vertexAlpha &&
+				(natras == nil || natras->binaryAlpha);
+
 			SetRenderState(rw::ALPHATESTREF, gsalpharef);
-			drawInst_simple(header, inst);
-			SetRenderState(rw::ALPHATESTFUNC, rw::ALPHALESS);
-			SetRenderState(rw::ZWRITEENABLE, 0);
-			drawInst_simple(header, inst);
-			SetRenderState(rw::ZWRITEENABLE, 1);
+			if(!skipSolid){
+				SetRenderState(rw::ALPHATESTFUNC, rw::ALPHAGREATEREQUAL);
+				drawInst_simple(header, inst);
+			}
+			if(!skipSoft){
+				SetRenderState(rw::ALPHATESTFUNC, rw::ALPHALESS);
+				SetRenderState(rw::ZWRITEENABLE, 0);
+				drawInst_simple(header, inst);
+				SetRenderState(rw::ZWRITEENABLE, 1);
+			}
 			SetRenderState(rw::ALPHATESTFUNC, alphafunc);
 			SetRenderState(rw::ALPHATESTREF, alpharef);
 		}else{

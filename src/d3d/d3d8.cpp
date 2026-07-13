@@ -564,6 +564,8 @@ readNativeTexture(Stream *stream)
 		pallength = format & Raster::PAL4 ? 32 : 256;
 		if(!d3d::isP8supported){
 			tex->raster = readAsImage(stream, width, height, depth, format|type, numLevels);
+			if(tex->raster)
+				d3d::evaluateBinaryAlpha(tex->raster);
 			return tex;
 		}
 	}
@@ -597,6 +599,7 @@ readNativeTexture(Stream *stream)
 		}else
 			stream->seek(size);
 	}
+	d3d::evaluateBinaryAlpha(raster);
 	return tex;
 }
 

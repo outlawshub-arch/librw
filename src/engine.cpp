@@ -30,6 +30,8 @@
 
 namespace rw {
 
+float gFogEnd = 0.0f;	// re3 silhouette hook (see rwengine.h)
+
 Engine *engine;
 PluginList Engine::s_plglist(sizeof(Engine));
 Engine::State Engine::state = Dead;
