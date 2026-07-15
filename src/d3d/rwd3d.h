@@ -34,6 +34,21 @@ extern Device renderdevice;
 #ifdef RW_D3D9
 #ifdef _D3D9_H_
 extern IDirect3DDevice9 *d3ddevice;
+// EX_GPU_PROFILER: per-frame submission counters bumped at every draw the d3d9 driver
+// issues (instanced meshes + im2d/im3d). Consumers snapshot around a pass and take
+// deltas; the counters themselves are never reset.
+extern uint32 exProfDraws, exProfPrims;
+extern IDirect3DTexture9 *depthTexture;	// screen-sized INTZ depth of the main scene (water transparency/foam reads it at s2)
+// Live video-mode switch: retarget the present parameters and Reset() in place (the same
+// release/restore cycle the vsync toggle and alt-tab recovery run), so managed textures,
+// pipelines and the streamed world survive. Returns 0 on a failed Reset (caller falls
+// back to a full engine reinit).
+bool32 d3d9ChangeVideoMode(int32 width, int32 height, bool32 windowed, uint32 msLevel);
+extern IDirect3DSurface9 *overrideZbufSurf;	// custom: one-shot z-buffer surface substitution (shadow-map INTZ)
+// custom: called at the top of releaseVideoMemory (before a device Reset) so the game's
+// own D3DPOOL_DEFAULT resources (shadow INTZ map) get freed - otherwise Reset() fails
+// on fullscreen alt-tab and the game crashes. nil = no-op.
+extern void (*deviceLostCB)(void);
 void setD3dMaterial(D3DMATERIAL9 *mat9);
 #endif
 
@@ -282,6 +297,7 @@ struct D3dRaster
 	bool hasAlpha;
 	bool customFormat;
 	bool autogenMipmap;
+	bool binaryAlpha;	// no texel alpha strictly inside (0,128): the GS-emu soft pass is a no-op
 };
 
 int32 getLevelSize(Raster *raster, int32 level);
@@ -313,6 +329,11 @@ inline void setMaterial(uint32 flags, const RGBA &color, const SurfaceProperties
 	else
 		setMaterial(white, surfaceprops, extraSurfProp);
 }
+
+// GS-emu pass elision (drawInst_GSemu): the effective material alpha the last
+// setMaterial published (no-modulate = white = 255), and the texture classifier
+extern int32 gsEffMatAlpha;
+void evaluateBinaryAlpha(Raster *raster);
 
 void setVertexShader(void *vs);
 void setPixelShader(void *ps);
@@ -407,6 +428,10 @@ void setNumLights(int numDir, int numPoint, int numSpot);
 int32 uploadLights(WorldLights *lightData);	// called by lightingCB_Shader
 
 extern void *im2dOverridePS;
+// [LOCAL PORT: EX_PORT_WATERREF] Im3D shader-override hooks (see d3dimmed.cpp).
+extern void *im3dOverrideVS;
+extern void *im3dOverridePS;
+extern Texture *im3dOverrideTex0;	// forces stage 0 = this texture on every Im3D flush
 
 extern void *default_amb_VS;
 extern void *default_amb_dir_VS;

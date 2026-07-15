@@ -33,6 +33,7 @@ const uint8 fontbits[256*256] = {
 #define NUMCHARS 100
 static uint16 *indices;
 static RWDEVICE::Im2DVertex *vertices;
+int charsetScale = 1;	// integer glyph scale - the 9x16 raster font is unreadable at 4K (debug menu)
 static int32 numChars;
 static Raster *lastRaster;
 
@@ -180,7 +181,7 @@ Charset::printChar(int32 c, int32 x, int32 y)
 	vert->setV(v, recipZ);
 	vert++;
 
-	vert->setScreenX(float(x+this->desc.width_internal));
+	vert->setScreenX(float(x+this->desc.width_internal*charsetScale));
 	vert->setScreenY((float)y);
 	vert->setScreenZ(rw::im2d::GetNearZ());
 	vert->setCameraZ(cam->nearPlane);
@@ -191,7 +192,7 @@ Charset::printChar(int32 c, int32 x, int32 y)
 	vert++;
 	
 	vert->setScreenX((float)x);
-	vert->setScreenY(float(y+this->desc.height_internal));
+	vert->setScreenY(float(y+this->desc.height_internal*charsetScale));
 	vert->setScreenZ(rw::im2d::GetNearZ());
 	vert->setCameraZ(cam->nearPlane);
 	vert->setRecipCameraZ(recipZ);
@@ -200,8 +201,8 @@ Charset::printChar(int32 c, int32 x, int32 y)
 	vert->setV(v+dv, recipZ);
 	vert++;
 
-	vert->setScreenX(float(x+this->desc.width_internal));
-	vert->setScreenY(float(y+this->desc.height_internal));
+	vert->setScreenX(float(x+this->desc.width_internal*charsetScale));
+	vert->setScreenY(float(y+this->desc.height_internal*charsetScale));
 	vert->setScreenZ(rw::im2d::GetNearZ());
 	vert->setCameraZ(cam->nearPlane);
 	vert->setRecipCameraZ(recipZ);
@@ -233,7 +234,7 @@ Charset::printBuffered(const char *str, int32 x, int32 y, bool32 hideSpaces)
 	while(*str){
 		if(!hideSpaces || *str != ' ')
 			printChar((uint8)*str, x, y);
-		x += this->desc.width;
+		x += this->desc.width*charsetScale;
 		str++;
 	}
 }

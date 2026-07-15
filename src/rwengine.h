@@ -1,5 +1,13 @@
 namespace rw {
 
+
+// re3 silhouette draw-distance hook: when > 0, overrides the fog END distance
+// (normally the camera far plane) for the NEXT camera begin-update only, then
+// auto-clears. Lets us pin the fog/silhouette line at the real draw distance
+// while the far clip is pushed out further so distant LODs draw as a solid
+// silhouette (fully-fogged) colour. 0 = disabled (vanilla behaviour).
+extern float gFogEnd;
+
 // uhhhm..... why are these not actual functions?
 enum DeviceReq
 {

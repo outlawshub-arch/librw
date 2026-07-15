@@ -587,9 +587,12 @@ setMaterial_fix(const RGBA &color, const SurfaceProperties &surfProps)
 }
 
 
+int32 gsEffMatAlpha = 255;	// consumed by drawInst_GSemu for pass elision
+
 void
 setMaterial(const RGBA &color, const SurfaceProperties &surfaceprops, float extraSurfProp)
 {
+	gsEffMatAlpha = color.alpha;	// post-modulate cap on every pixel's final alpha
 	if(!equal(d3dShaderState.matColor, color)){
 		rw::RGBAf col;
 		convColor(&col, &color);
@@ -1176,10 +1179,62 @@ recreateDynamicIBs(void)
 	}
 }
 
+// INTZ depth-as-texture support (ported from re3-modded). We create the main
+// framebuffer's depth-stencil as an INTZ texture and route the default depth surface to
+// it, so the depth buffer the main scene writes can also be sampled by shaders (used for
+// the water underwater-fog transparency + shoreline foam). Smaller off-screen cameras
+// (e.g. the water reflection RT) don't match the screen size, so they keep their own
+// plain depth-stencil surfaces - only the main, screen-sized depth becomes readable.
+IDirect3DTexture9 *depthTexture;
+static IDirect3DSurface9 *depthTextureSurface;
+
+#ifndef RW_INTZ_FOURCC
+#define RW_INTZ_FOURCC ((D3DFORMAT)((uint32)(uint8)'I' | ((uint32)(uint8)'N'<<8) | ((uint32)(uint8)'T'<<16) | ((uint32)(uint8)'Z'<<24)))
+#endif
+
+static void
+releaseDepthTexture(void)
+{
+	if(depthTextureSurface){ depthTextureSurface->Release(); depthTextureSurface = nil; }
+	if(depthTexture){ depthTexture->Release(); depthTexture = nil; }
+}
+
+static void
+installDepthTexture(void)
+{
+	releaseDepthTexture();
+	// INTZ can't be multisampled - fall back to the auto depth-stencil (no readback)
+	if(d3d9Globals.present.MultiSampleType != D3DMULTISAMPLE_NONE)
+		return;
+	// is INTZ usable as a depth/stencil texture on this device? NB: CheckDeviceFormat
+	// wants the ADAPTER (display) format, which can't be an alpha format - using the
+	// backbuffer format (often A8R8G8B8) gives a false "unsupported".
+	D3DDISPLAYMODE dispMode;
+	if(FAILED(d3d9Globals.d3d9->GetAdapterDisplayMode(d3d9Globals.adapter, &dispMode)))
+		dispMode.Format = D3DFMT_X8R8G8B8;
+	if(FAILED(d3d9Globals.d3d9->CheckDeviceFormat(d3d9Globals.adapter, D3DDEVTYPE_HAL,
+		dispMode.Format, D3DUSAGE_DEPTHSTENCIL, D3DRTYPE_TEXTURE, RW_INTZ_FOURCC)))
+		return;
+	if(FAILED(d3ddevice->CreateTexture(d3d9Globals.present.BackBufferWidth, d3d9Globals.present.BackBufferHeight,
+		1, D3DUSAGE_DEPTHSTENCIL, RW_INTZ_FOURCC, D3DPOOL_DEFAULT, &depthTexture, nil)) || depthTexture == nil)
+		return;
+	depthTexture->GetSurfaceLevel(0, &depthTextureSurface);
+	// route the main framebuffer's depth into our readable texture: screen-sized
+	// camera z-rasters adopt defaultDepthSurf (see rasterCreateZbuffer)
+	d3d9Globals.defaultDepthSurf = depthTextureSurface;
+	deviceCache.depthSurface = depthTextureSurface;
+	d3ddevice->SetDepthStencilSurface(depthTextureSurface);
+}
+
 static void
 releaseVideoMemory(void)
 {
 	int32 i;
+	// custom: let the game free its own DEFAULT-pool resources (shadow INTZ map, the
+	// lazy-init shadow camera) BEFORE the Reset - any surviving DEFAULT resource makes
+	// Reset() fail (the fullscreen alt-tab crash)
+	if(deviceLostCB)
+		deviceLostCB();
 	for(i = 0; i < MAXNUMSTAGES; i++)
 		d3ddevice->SetTexture(i, nil);
 	d3ddevice->SetVertexDeclaration(nil);
@@ -1194,6 +1249,7 @@ releaseVideoMemory(void)
 		setRenderTarget(i, nil);
 	setDepthSurface(d3d9Globals.defaultDepthSurf);
 
+	releaseDepthTexture();	// D3DPOOL_DEFAULT - must be freed before a device Reset
 	releaseVidmemRasters();
 	releaseDynamicVBs();
 	releaseDynamicIBs();
@@ -1210,12 +1266,65 @@ restoreVideoMemory(void)
 	d3d9Globals.defaultDepthSurf->Release();	// refcount increased by Get
 	deviceCache.depthSurface = d3d9Globals.defaultDepthSurf;
 
+	// Re-create the INTZ depth texture and re-route defaultDepthSurf to it BEFORE
+	// recreateVidmemRasters re-points the screen-sized camera z-rasters at it.
+	installDepthTexture();
+
 	recreateDynamicIBs();
 	recreateDynamicVBs();
 	// important that we get all raster back before restoring state
 	recreateVidmemRasters();
 
 	restoreD3d9Device();
+}
+
+// Live video-mode switch (game-facing): update the present parameters and Reset the device
+// in place. MSAA is validated against the new mode and silently dropped if unsupported;
+// exclusive mode drops an alpha backbuffer format to X8 where the driver demands it. On a
+// failed Reset the old mode is restored and 0 returned so the caller can fall back to the
+// full teardown/reinit.
+bool32
+d3d9ChangeVideoMode(int32 width, int32 height, bool32 windowed, uint32 msLevel)
+{
+	if(d3ddevice == nil)
+		return 0;
+
+	D3DPRESENT_PARAMETERS oldPresent = d3d9Globals.present;
+	uint32 oldMsLevel = d3d9Globals.msLevel;
+
+	D3DFORMAT format = d3d9Globals.present.BackBufferFormat;
+	if(!windowed && format == D3DFMT_A8R8G8B8 &&
+	   FAILED(d3d9Globals.d3d9->CheckDeviceType(d3d9Globals.adapter, D3DDEVTYPE_HAL,
+		D3DFMT_X8R8G8B8, format, FALSE)))
+		format = D3DFMT_X8R8G8B8;
+
+	D3DMULTISAMPLE_TYPE ms = msLevel <= 1 ? D3DMULTISAMPLE_NONE : (D3DMULTISAMPLE_TYPE)msLevel;
+	if(ms != D3DMULTISAMPLE_NONE &&
+	   FAILED(d3d9Globals.d3d9->CheckDeviceMultiSampleType(d3d9Globals.adapter, D3DDEVTYPE_HAL,
+		format, windowed ? TRUE : FALSE, ms, nil)))
+		ms = D3DMULTISAMPLE_NONE;
+
+	d3d9Globals.present.BackBufferWidth            = width;
+	d3d9Globals.present.BackBufferHeight           = height;
+	d3d9Globals.present.BackBufferFormat           = format;
+	d3d9Globals.present.Windowed                   = windowed ? TRUE : FALSE;
+	d3d9Globals.present.FullScreen_RefreshRateInHz = D3DPRESENT_RATE_DEFAULT;
+	d3d9Globals.present.MultiSampleType            = ms;
+	d3d9Globals.present.MultiSampleQuality         = 0;
+	d3d9Globals.msLevel = ms == D3DMULTISAMPLE_NONE ? 1 : msLevel;
+
+	releaseVideoMemory();
+	if(FAILED(d3ddevice->Reset(&d3d9Globals.present))){
+		// roll back to the old mode; if even that fails, the normal device-lost recovery
+		// in showRaster picks the device up on the next present
+		d3d9Globals.present = oldPresent;
+		d3d9Globals.msLevel = oldMsLevel;
+		d3ddevice->Reset(&d3d9Globals.present);
+		restoreVideoMemory();
+		return 0;
+	}
+	restoreVideoMemory();
+	return 1;
 }
 
 static void
@@ -1296,9 +1405,14 @@ beginUpdate(Camera *cam)
 	// TODO: figure out where this is really done
 //	setRenderState(D3DRS_FOGSTART, *(uint32*)&cam->fogPlane);
 //	setRenderState(D3DRS_FOGEND, *(uint32*)&cam->farPlane);
+	float fogEnd = cam->farPlane;
+	if(gFogEnd > 0.0f){
+		fogEnd = gFogEnd;	// re3 silhouette: pin fog end short of the far clip
+		gFogEnd = 0.0f;		// one-shot: only this camera pass is affected
+	}
 	d3dShaderState.fogData.start = cam->fogPlane;
-	d3dShaderState.fogData.end = cam->farPlane;
-	d3dShaderState.fogData.range = 1.0f/(cam->fogPlane - cam->farPlane);
+	d3dShaderState.fogData.end = fogEnd;
+	d3dShaderState.fogData.range = 1.0f/(cam->fogPlane - fogEnd);
 	// TODO: not quite sure this is the right place to do this...
 	d3dShaderState.fogData.disable = rwStateCache.fogenable ? 0.0f : 1.0f;
 	d3dShaderState.fogDisable.start = 0.0f;
@@ -1653,6 +1767,11 @@ initD3D(void)
 	d3ddevice->GetDepthStencilSurface(&d3d9Globals.defaultDepthSurf);
 	d3d9Globals.defaultDepthSurf->Release();	// refcount increased by Get
 	deviceCache.depthSurface = d3d9Globals.defaultDepthSurf;
+
+	// Route the main framebuffer's depth into a sampleable INTZ texture (for the water
+	// underwater-depth fog + foam). Must run before the main camera's screen-sized
+	// z-raster is created, which then adopts defaultDepthSurf.
+	installDepthTexture();
 
 	d3d9Globals.numTextures = 0;
 	d3d9Globals.numVertexShaders = 0;

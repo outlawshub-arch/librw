@@ -373,16 +373,19 @@ instanceMesh(rw::ObjPipeline *rwpipe, Geometry *geo)
 		inst->baseIndex = inst->minVert;
 		inst->startIndex = startindex;
 		inst->numPrimitives = header->primType == D3DPT_TRIANGLESTRIP ? inst->numIndex-2 : inst->numIndex/3;
+		if(indices){	// index buffer create/lock can fail (device lost / OOM) - never write to null
 		if(inst->minVert == 0)
 			memcpy(&indices[inst->startIndex], mesh->indices, inst->numIndex*2);
 		else
 			for(uint32 j = 0; j < inst->numIndex; j++)
 				indices[inst->startIndex+j] = mesh->indices[j] - inst->minVert;
+		}
 		startindex += inst->numIndex;
 		mesh++;
 		inst++;
 	}
-	unlockIndices(header->indexBuffer);
+	if(indices)
+		unlockIndices(header->indexBuffer);
 
 	memset(&header->vertexStream, 0, 2*sizeof(VertexStream));
 
@@ -596,6 +599,7 @@ defaultInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance)
 		getDeclaration(header->vertexDeclaration, dcl);
 
 	uint8 *verts = lockVertices(s->vertexBuffer, 0, 0, D3DLOCK_NOSYSLOCK);
+	if(verts){	// vertex buffer create/lock can fail (device lost / OOM) - never write to null
 
 	// Instance vertices
 	if(!reinstance || geo->lockedSinceInst&Geometry::LOCKVERTICES){
@@ -658,6 +662,7 @@ defaultInstanceCB(Geometry *geo, InstanceDataHeader *header, bool32 reinstance)
 			header->vertexStream[dcl[i].stream].stride);
 	}
 	unlockVertices(s->vertexBuffer);
+	}	// end if(verts)
 }
 
 void
@@ -808,6 +813,7 @@ readNativeTexture(Stream *stream)
 		}else
 			stream->seek(size);
 	}
+	d3d::evaluateBinaryAlpha(raster);
 	return tex;
 }
 

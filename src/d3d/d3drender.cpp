@@ -16,6 +16,7 @@ namespace d3d {
 
 #ifdef RW_D3D9
 IDirect3DDevice9 *d3ddevice = nil;
+uint32 exProfDraws, exProfPrims;	// EX_GPU_PROFILER submission counters (see rwd3d.h)
 
 #define MAX_LIGHTS 8
 
