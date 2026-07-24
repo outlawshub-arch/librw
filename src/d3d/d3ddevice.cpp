@@ -1179,12 +1179,9 @@ recreateDynamicIBs(void)
 	}
 }
 
-// INTZ depth-as-texture support (ported from re3-modded). We create the main
-// framebuffer's depth-stencil as an INTZ texture and route the default depth surface to
-// it, so the depth buffer the main scene writes can also be sampled by shaders (used for
-// the water underwater-fog transparency + shoreline foam). Smaller off-screen cameras
-// (e.g. the water reflection RT) don't match the screen size, so they keep their own
-// plain depth-stencil surfaces - only the main, screen-sized depth becomes readable.
+// INTZ depth-as-texture support (ported from re3-modded). Creates the main framebuffer's
+// depth-stencil as an INTZ texture so its depth can be sampled by shaders (used for the
+// water underwater-fog transparency + shoreline foam); off-screen cameras keep plain surfaces.
 IDirect3DTexture9 *depthTexture;
 static IDirect3DSurface9 *depthTextureSurface;
 
@@ -1219,7 +1216,7 @@ installDepthTexture(void)
 		1, D3DUSAGE_DEPTHSTENCIL, RW_INTZ_FOURCC, D3DPOOL_DEFAULT, &depthTexture, nil)) || depthTexture == nil)
 		return;
 	depthTexture->GetSurfaceLevel(0, &depthTextureSurface);
-	// route the main framebuffer's depth into our readable texture: screen-sized
+	// route the main framebuffer's depth into a readable texture: screen-sized
 	// camera z-rasters adopt defaultDepthSurf (see rasterCreateZbuffer)
 	d3d9Globals.defaultDepthSurf = depthTextureSurface;
 	deviceCache.depthSurface = depthTextureSurface;
@@ -1279,10 +1276,8 @@ restoreVideoMemory(void)
 }
 
 // Live video-mode switch (game-facing): update the present parameters and Reset the device
-// in place. MSAA is validated against the new mode and silently dropped if unsupported;
-// exclusive mode drops an alpha backbuffer format to X8 where the driver demands it. On a
-// failed Reset the old mode is restored and 0 returned so the caller can fall back to the
-// full teardown/reinit.
+// in place. MSAA and an alpha backbuffer format are validated against the new mode and
+// dropped if unsupported; a failed Reset restores the old mode and returns 0.
 bool32
 d3d9ChangeVideoMode(int32 width, int32 height, bool32 windowed, uint32 msLevel)
 {

@@ -331,7 +331,8 @@ inline void setMaterial(uint32 flags, const RGBA &color, const SurfaceProperties
 }
 
 // GS-emu pass elision (drawInst_GSemu): the effective material alpha the last
-// setMaterial published (no-modulate = white = 255), and the texture classifier
+// setMaterial published (no-modulate = white = 255), and whether the texture's
+// alpha is binary (evaluateBinaryAlpha), together decide which pass to skip.
 extern int32 gsEffMatAlpha;
 void evaluateBinaryAlpha(Raster *raster);
 

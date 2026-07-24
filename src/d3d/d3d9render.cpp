@@ -51,12 +51,9 @@ drawInst_GSemu(d3d9::InstanceDataHeader *header, InstanceData *inst)
 			alpharef = rw::GetRenderState(rw::ALPHATESTREF);
 			gsalpharef = rw::GetRenderState(rw::GSALPHATESTREF);
 
-			// pass elision: the effective material alpha (published by setMaterial,
-			// 255 when the geometry doesn't modulate) caps every pixel's final alpha.
-			// Below the GS ref the solid pass can't pass its GE test anywhere; at a
-			// 255 cap with no per-vertex alpha and a binary-alpha texture no pixel
-			// can land inside (0, ref) for the soft pass. Either way the skipped
-			// pass is a mathematically empty draw.
+			// pass elision: skip the solid pass when material alpha is below the GS
+			// ref, and skip the soft pass when alpha is opaque with no per-vertex or
+			// texture alpha, since neither pass would write any pixels.
 			Texture *tex = inst->material->texture;
 			d3d::D3dRaster *natras = tex && tex->raster ? GETD3DRASTEREXT(tex->raster) : nil;
 			bool skipSolid = d3d::gsEffMatAlpha < gsalpharef;

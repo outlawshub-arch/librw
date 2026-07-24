@@ -332,13 +332,9 @@ im3DTransform(void *vertices, int32 numVertices, Matrix *world, uint32 flags)
 	else
 		setVertexShader(shader);
 
-	// VSLOC_dayParam/nightParam land on c42/c43 - the SAME registers the water
-	// reflection override VS (neoWater_VS) reads reflProps/specLights from. When a
-	// water override is active these day/night writes would clobber the reflProps
-	// that WaterReflectionFlatBegin just uploaded (making reflAmount=1 -> pure
-	// reflection with no water texture). Skip them for the override draw; the
-	// override VS doesn't use day/night blending. (re3-modded's librw has no
-	// dayParam mechanism at all, which is why its flat water reflected correctly.)
+	// VSLOC_dayParam/nightParam land on c42/c43, the same registers the water
+	// reflection override VS (neoWater_VS) reads reflProps/specLights from; writing
+	// them here would clobber reflProps, so skip for the override draw.
 	if(im3dOverrideVS == nil){
 		float dayparam[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 		float nightparam[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -362,7 +358,7 @@ im3DRenderPrimitive(PrimitiveType primType)
 	d3d::flushCache();
 
 	// Direct-bind stage 0 AFTER flushCache - flushCache syncs TEXTURERASTER to
-	// stage 0 and would clobber this if we did it first.
+	// stage 0 and would clobber this if done first.
 	if(im3dOverrideTex0 && im3dOverrideTex0->raster){
 		D3dRaster *r = GETD3DRASTEREXT(im3dOverrideTex0->raster);
 		d3ddevice->SetTexture(0, (IDirect3DTexture9*)r->texture);
@@ -413,7 +409,7 @@ im3DRenderIndexedPrimitive(PrimitiveType primType, void *indices, int32 numIndic
 	d3d::flushCache();
 
 	// Direct-bind stage 0 AFTER flushCache - flushCache syncs TEXTURERASTER to
-	// stage 0 and would clobber this if we did it first.
+	// stage 0 and would clobber this if done first.
 	if(im3dOverrideTex0 && im3dOverrideTex0->raster){
 		D3dRaster *r = GETD3DRASTEREXT(im3dOverrideTex0->raster);
 		d3ddevice->SetTexture(0, (IDirect3DTexture9*)r->texture);
